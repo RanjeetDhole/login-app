@@ -6,6 +6,13 @@ terraform {
     }
   }
   required_version = ">= 1.2.0"
+
+  backend "s3" {
+    bucket  = "login-app-tf-state-dev"   # Your S3 bucket
+    key     = "vpc/terraform.tfstate"    # Path inside bucket
+    region  = "ap-south-1"
+    encrypt = true
+  }
 }
 
 provider "aws" {
@@ -36,7 +43,7 @@ module "vpc" {
       Project   = var.name
       Env       = var.env
       ManagedBy = "Terraform"
-      Owner      = "Ranjeet" 
+      Owner     = "Ranjeet"
       Region    = data.aws_region.current.name
     },
     var.tags
