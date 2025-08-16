@@ -1,1 +1,44 @@
-demo
+terraform modules - 
+
+vpc 
+security groups 
+
+
+terraform/
+├── README.md
+├── modules/
+│ ├── vpc/
+│ │ ├── main.tf
+│ │ ├── variables.tf
+│ │ └── outputs.tf
+│ ├── eks/
+│ │ ├── main.tf
+│ │ ├── variables.tf
+│ │ └── outputs.tf
+│ ├── security-groups/
+│ │ ├── main.tf
+│ │ ├── variables.tf
+│ │ └── outputs.tf
+│ └── addons/
+│ ├── main.tf
+│ ├── variables.tf
+│ └── outputs.tf
+├── envs/
+│ ├── dev/
+│ │ ├── backend.tf
+│ │ ├── providers.tf
+│ │ ├── versions.tf
+│ │ ├── variables.tf
+│ │ ├── terraform.tfvars
+│ │ └── main.tf
+│ └── prod/
+│ ├── backend.tf
+│ ├── providers.tf
+│ ├── versions.tf
+│ ├── variables.tf
+│ ├── terraform.tfvars
+│ └── main.tf
+└── global/
+└── bootstrap/ # optional: creates S3 state bucket + DynamoDB table for locking
+├── backend-bootstrap.tf
+└── variables.tf
