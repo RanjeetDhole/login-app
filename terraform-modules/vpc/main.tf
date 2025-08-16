@@ -36,6 +36,7 @@ module "vpc" {
       Project   = var.name
       Env       = var.env
       ManagedBy = "Terraform"
+      Owner      = "Ranjeet" 
       Region    = data.aws_region.current.name
     },
     var.tags
