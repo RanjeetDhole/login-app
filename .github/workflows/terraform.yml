@@ -1,4 +1,4 @@
-name: Terraform AWS infra
+name: Terraform AWS VPC
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   terraform:
-    name: Provision VPC + Security Group
+    name: Provision VPC
     runs-on: ubuntu-latest
 
     steps:
@@ -32,17 +32,17 @@ jobs:
 
       - name: Terraform Init
         run: terraform init
-        working-directory: .   # 👈 repo root (where main.tf lives)
+        working-directory: ./terraform-modules/vpc
 
       - name: Terraform Validate
         run: terraform validate
-        working-directory: .
+        working-directory: ./terraform-modules/vpc
 
       - name: Terraform Plan
         run: terraform plan -out=tfplan
-        working-directory: .
+        working-directory: ./terraform-modules/vpc
 
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main'
         run: terraform apply -auto-approve tfplan
-        working-directory: .
+        working-directory: ./terraform-modules/vpc
