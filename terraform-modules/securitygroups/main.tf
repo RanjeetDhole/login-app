@@ -1,7 +1,7 @@
 # --- Security Group for Web/App servers ---
 module "sg_web" {
   source = "./terraform-modules/securitygroups" 
-
+# login-app\terraform-modules\securitygroups\main.tf
   name        = "${var.name}-${var.env}-web-sg"
   description = "Allow HTTP, HTTPS, and SSH"
   vpc_id      = module.vpc.vpc_id  
