@@ -1,4 +1,4 @@
-name: Terraform AWS VPC
+name: Terraform AWS securitygroups
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   terraform:
-    name: Provision VPC
+    name: Provision securitygroups
     runs-on: ubuntu-latest
 
     steps:
@@ -32,17 +32,17 @@ jobs:
 
       - name: Terraform Init
         run: terraform init
-        working-directory: ./terraform-modules/vpc
-
+        working-directory: ./terraform-modules/securitygroups
+# login-app\terraform-modules\securitygroups\main.tf
       - name: Terraform Validate
         run: terraform validate
-        working-directory: ./terraform-modules/vpc
+        working-directory: ./terraform-modules/securitygroups
 
       - name: Terraform Plan
         run: terraform plan -out=tfplan
-        working-directory: ./terraform-modules/vpc
+        working-directory: ./terraform-modules/securitygroups
 
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main'
         run: terraform apply -auto-approve tfplan
-        working-directory: ./terraform-modules/vpc
+        working-directory: ./terraform-modules/securitygroups
