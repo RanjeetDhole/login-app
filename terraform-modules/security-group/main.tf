@@ -2,7 +2,7 @@
 module "sg_web" {
   source = "./terraform-modules/security-group"
   name        = "${var.name}-${var.env}-web-sg"
-  description = "Allow HTTP, HTTPS, and SSH"
+  description = "Allow HTTP, HTTPS, SSH, and custom app port"
   vpc_id      = module.vpc.vpc_id  
 
   ingress_rules = [
@@ -26,6 +26,13 @@ module "sg_web" {
       protocol    = "tcp"
       cidr_blocks = ["0.0.0.0/0"]
       description = "Allow HTTPS"
+    },
+    {
+      from_port   = 3020
+      to_port     = 3020
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "Allow custom app port 3020"
     }
   ]
 
