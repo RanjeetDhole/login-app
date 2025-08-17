@@ -1,4 +1,4 @@
-name: Terraform AWS securitygroups
+name: Terraform AWS infra
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   terraform:
-    name: Provision securitygroups
+    name: Provision VPC + Security Group
     runs-on: ubuntu-latest
 
     steps:
@@ -32,7 +32,7 @@ jobs:
 
       - name: Terraform Init
         run: terraform init
-        working-directory: .
+        working-directory: .   # 👈 repo root (where main.tf lives)
 
       - name: Terraform Validate
         run: terraform validate
@@ -46,4 +46,3 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: terraform apply -auto-approve tfplan
         working-directory: .
-        
