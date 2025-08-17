@@ -42,3 +42,623 @@ terraform/
 └── bootstrap/ # optional: creates S3 state bucket + DynamoDB table for locking
 ├── backend-bootstrap.tf
 └── variables.tf
+
+
+
+
+# Terraform AWS: VPC + NAT, EKS (1 node group) + K8s add‑ons, Security Groups — Modular Scaffold
+
+This repository layout gives you a clean, production‑style structure to provision:
+
+* A VPC with 3 AZs, public + private subnets, single NAT Gateway
+* An EKS cluster (v1.30) with **one** managed node group
+* Security Groups (example: app/db SGs and RDS ingress from nodes) — easily extensible
+* Core EKS addons (vpc‑cni, coredns, kube‑proxy) + common Helm add‑ons (ALB Controller, Metrics Server, Cluster Autoscaler) using IRSA
+
+You can copy‑paste this entire doc into your repo as a starting point.
+
+---
+
+## Repo Tree
+
+```
+terraform/
+├── README.md
+├── modules/
+│   ├── vpc/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── eks/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── security-groups/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   └── addons/
+│       ├── main.tf
+│       ├── variables.tf
+│       └── outputs.tf
+├── envs/
+│   ├── dev/
+│   │   ├── backend.tf
+│   │   ├── providers.tf
+│   │   ├── versions.tf
+│   │   ├── variables.tf
+│   │   ├── terraform.tfvars
+│   │   └── main.tf
+│   └── prod/
+│       ├── backend.tf
+│       ├── providers.tf
+│       ├── versions.tf
+│       ├── variables.tf
+│       ├── terraform.tfvars
+│       └── main.tf
+└── global/
+    └── bootstrap/   # optional: creates S3 state bucket + DynamoDB table for locking
+        ├── backend-bootstrap.tf
+        └── variables.tf
+```
+
+---
+
+## modules/vpc
+
+### main.tf
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+  }
+}
+
+data "aws_availability_zones" "available" {}
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.8"
+
+  name                 = "${var.name}-${var.env}-vpc"
+  cidr                 = var.vpc_cidr
+  azs                  = slice(data.aws_availability_zones.available.names, 0, 3)
+  private_subnets      = var.private_subnets
+  public_subnets       = var.public_subnets
+  enable_nat_gateway   = true
+  single_nat_gateway   = true
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  # Optional: VPC endpoints for private egress to AWS services
+  enable_s3_endpoint       = true
+  enable_dynamodb_endpoint = true
+
+  tags = var.tags
+}
+```
+
+### variables.tf
+
+```hcl
+variable "name" { type = string }
+variable "env"  { type = string }
+variable "vpc_cidr" { type = string }
+variable "private_subnets" { type = list(string) }
+variable "public_subnets"  { type = list(string) }
+variable "tags" { type = map(string) }
+```
+
+### outputs.tf
+
+```hcl
+output "vpc_id"               { value = module.vpc.vpc_id }
+output "private_subnets"      { value = module.vpc.private_subnets }
+output "public_subnets"       { value = module.vpc.public_subnets }
+output "private_route_table_ids" { value = module.vpc.private_route_table_ids }
+```
+
+---
+
+## modules/eks
+
+### main.tf
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = ">= 5.0" }
+    kubernetes = { source = "hashicorp/kubernetes", version = ">= 2.30" }
+  }
+}
+
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 20.13"
+
+  cluster_name                    = "${var.name}-${var.env}-eks"
+  cluster_version                 = "1.30"
+  vpc_id                          = var.vpc_id
+  subnet_ids                      = var.private_subnets
+  enable_cluster_creator_admin_permissions = true
+
+  cluster_endpoint_public_access  = true
+
+  # Core addons (AWS managed)
+  cluster_addons = {
+    coredns    = { most_recent = true }
+    kube-proxy = { most_recent = true }
+    vpc-cni    = { most_recent = true }
+  }
+
+  # One managed node group
+  eks_managed_node_groups = {
+    default = {
+      instance_types = ["t3.medium"]
+      capacity_type  = "ON_DEMAND"
+      min_size       = 1
+      max_size       = 3
+      desired_size   = 1
+    }
+  }
+
+  tags = var.tags
+}
+```
+
+### variables.tf
+
+```hcl
+variable "name"            { type = string }
+variable "env"             { type = string }
+variable "vpc_id"          { type = string }
+variable "private_subnets" { type = list(string) }
+variable "tags"            { type = map(string) }
+```
+
+### outputs.tf
+
+```hcl
+output "cluster_name"           { value = module.eks.cluster_name }
+output "cluster_endpoint"       { value = module.eks.cluster_endpoint }
+output "cluster_ca"             { value = module.eks.cluster_certificate_authority_data }
+output "oidc_provider_arn"      { value = module.eks.oidc_provider_arn }
+output "node_security_group_id" { value = module.eks.node_security_group_id }
+```
+
+---
+
+## modules/security-groups
+
+### main.tf
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = ">= 5.0" }
+  }
+}
+
+resource "aws_security_group" "app" {
+  name        = "${var.name}-${var.env}-app-sg"
+  description = "App SG (EKS pods/nodes -> DB/Services)"
+  vpc_id      = var.vpc_id
+  tags        = var.tags
+}
+
+resource "aws_security_group" "db" {
+  name        = "${var.name}-${var.env}-db-sg"
+  description = "DB SG allowing Postgres from EKS nodes"
+  vpc_id      = var.vpc_id
+  tags        = var.tags
+}
+
+# Example: allow Postgres from EKS node SG to DB SG
+resource "aws_security_group_rule" "db_in_pg" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.db.id
+  source_security_group_id = var.node_security_group_id
+}
+
+resource "aws_security_group_rule" "db_egress_all" {
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.db.id
+  cidr_blocks       = ["0.0.0.0/0"]
+}
+```
+
+### variables.tf
+
+```hcl
+variable "name" { type = string }
+variable "env"  { type = string }
+variable "vpc_id" { type = string }
+variable "node_security_group_id" { type = string }
+variable "tags" { type = map(string) }
+```
+
+### outputs.tf
+
+```hcl
+output "app_sg_id" { value = aws_security_group.app.id }
+output "db_sg_id"  { value = aws_security_group.db.id }
+```
+
+---
+
+## modules/addons (Helm add‑ons + IRSA)
+
+> Installs AWS Load Balancer Controller, Metrics Server, and Cluster Autoscaler using IRSA roles bound to service accounts.
+
+### main.tf
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = ">= 5.0" }
+    helm = { source = "hashicorp/helm", version = ">= 2.12" }
+    kubernetes = { source = "hashicorp/kubernetes", version = ">= 2.30" }
+  }
+}
+
+locals {
+  cluster_name = var.cluster_name
+}
+
+# --- Providers configured from parent (see envs/*/main.tf) ---
+
+# IRSA: ALB Controller
+module "alb_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.39"
+
+  role_name_prefix                 = "${var.name}-${var.env}-alb"
+  attach_load_balancer_controller_policy = true
+  oidc_providers = {
+    main = {
+      provider_arn               = var.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "helm_release" "alb" {
+  name       = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  namespace  = "kube-system"
+  create_namespace = false
+
+  set {
+    name  = "clusterName"
+    value = local.cluster_name
+  }
+  set {
+    name  = "serviceAccount.create"
+    value = "true"
+  }
+  set {
+    name  = "serviceAccount.name"
+    value = "aws-load-balancer-controller"
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\.amazonaws\.com/role-arn"
+    value = module.alb_irsa.iam_role_arn
+  }
+}
+
+# Metrics Server
+resource "helm_release" "metrics_server" {
+  name       = "metrics-server"
+  repository = "https://kubernetes-sigs.github.io/metrics-server/"
+  chart      = "metrics-server"
+  namespace  = "kube-system"
+  create_namespace = false
+}
+
+# IRSA: Cluster Autoscaler
+module "ca_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.39"
+
+  role_name_prefix                      = "${var.name}-${var.env}-ca"
+  attach_cluster_autoscaler_policy      = true
+  cluster_autoscaler_cluster_ids        = [local.cluster_name]
+  oidc_providers = {
+    main = {
+      provider_arn               = var.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:cluster-autoscaler"]
+    }
+  }
+}
+
+resource "helm_release" "cluster_autoscaler" {
+  name       = "cluster-autoscaler"
+  repository = "https://kubernetes.github.io/autoscaler"
+  chart      = "cluster-autoscaler"
+  namespace  = "kube-system"
+  create_namespace = false
+
+  set {
+    name  = "autoDiscovery.clusterName"
+    value = local.cluster_name
+  }
+  set {
+    name  = "awsRegion"
+    value = var.region
+  }
+  set {
+    name  = "rbac.serviceAccount.create"
+    value = "true"
+  }
+  set {
+    name  = "rbac.serviceAccount.name"
+    value = "cluster-autoscaler"
+  }
+  set {
+    name  = "extraArgs.balance-similar-node-groups"
+    value = "true"
+  }
+  set {
+    name  = "extraArgs.skip-nodes-with-system-pods"
+    value = "false"
+  }
+  set {
+    name  = "extraArgs.scale-down-unneeded-time"
+    value = "5m"
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\.amazonaws\.com/role-arn"
+    value = module.ca_irsa.iam_role_arn
+  }
+}
+```
+
+### variables.tf
+
+```hcl
+variable "name" { type = string }
+variable "env"  { type = string }
+variable "region" { type = string }
+variable "cluster_name" { type = string }
+variable "cluster_endpoint" { type = string }
+variable "cluster_ca" { type = string }
+variable "oidc_provider_arn" { type = string }
+```
+
+### outputs.tf
+
+```hcl
+output "alb_irsa_role_arn" { value = module.alb_irsa.iam_role_arn }
+output "ca_irsa_role_arn"  { value = module.ca_irsa.iam_role_arn }
+```
+
+---
+
+## envs/dev (duplicate for prod with different CIDRs, sizes, etc.)
+
+### versions.tf
+
+```hcl
+terraform { required_version = ">= 1.5.0" }
+```
+
+### backend.tf
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket         = "your-tfstate-bucket"
+    key            = "eks-foundation/dev/terraform.tfstate"
+    region         = "ap-south-1"
+    dynamodb_table = "your-tflock-table"
+    encrypt        = true
+  }
+}
+```
+
+### providers.tf
+
+```hcl
+provider "aws" {
+  region = var.region
+}
+
+# These are used by modules/addons
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_ca)
+  token                  = data.aws_eks_cluster_auth.this.token
+}
+
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_ca)
+    token                  = data.aws_eks_cluster_auth.this.token
+  }
+}
+
+data "aws_eks_cluster_auth" "this" {
+  name = module.eks.cluster_name
+}
+```
+
+### variables.tf
+
+```hcl
+variable "name"    { type = string }
+variable "env"     { type = string }
+variable "region"  { type = string }
+variable "vpc_cidr" { type = string }
+variable "private_subnets" { type = list(string) }
+variable "public_subnets"  { type = list(string) }
+variable "tags" { type = map(string) }
+```
+
+### terraform.tfvars (example)
+
+```hcl
+name   = "platform"
+env    = "dev"
+region = "ap-south-1"
+
+vpc_cidr        = "10.0.0.0/16"
+private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+
+tags = {
+  Project = "platform"
+  Env     = "dev"
+}
+```
+
+### main.tf
+
+```hcl
+locals { tags = var.tags }
+
+module "vpc" {
+  source           = "../../modules/vpc"
+  name             = var.name
+  env              = var.env
+  vpc_cidr         = var.vpc_cidr
+  private_subnets  = var.private_subnets
+  public_subnets   = var.public_subnets
+  tags             = local.tags
+}
+
+module "eks" {
+  source          = "../../modules/eks"
+  name            = var.name
+  env             = var.env
+  vpc_id          = module.vpc.vpc_id
+  private_subnets = module.vpc.private_subnets
+  tags            = local.tags
+}
+
+module "security_groups" {
+  source                 = "../../modules/security-groups"
+  name                   = var.name
+  env                    = var.env
+  vpc_id                 = module.vpc.vpc_id
+  node_security_group_id = module.eks.node_security_group_id
+  tags                   = local.tags
+}
+
+# Kubernetes add-ons after cluster is up
+module "addons" {
+  source            = "../../modules/addons"
+  name              = var.name
+  env               = var.env
+  region            = var.region
+  cluster_name      = module.eks.cluster_name
+  cluster_endpoint  = module.eks.cluster_endpoint
+  cluster_ca        = module.eks.cluster_ca
+  oidc_provider_arn = module.eks.oidc_provider_arn
+}
+```
+
+---
+
+## global/bootstrap (optional)
+
+Use this once to create the S3 state bucket and DynamoDB lock table.
+
+### backend-bootstrap.tf
+
+```hcl
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = ">= 5.0" }
+  }
+}
+
+provider "aws" { region = var.region }
+
+resource "aws_s3_bucket" "state" {
+  bucket = var.bucket
+}
+
+resource "aws_s3_bucket_versioning" "v" {
+  bucket = aws_s3_bucket.state.id
+  versioning_configuration { status = "Enabled" }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "enc" {
+  bucket = aws_s3_bucket.state.id
+  rule { apply_server_side_encryption_by_default { sse_algorithm = "AES256" } }
+}
+
+resource "aws_dynamodb_table" "lock" {
+  name           = var.lock_table
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "LockID"
+  attribute { name = "LockID" type = "S" }
+}
+```
+
+### variables.tf
+
+```hcl
+variable "region" { type = string }
+variable "bucket" { type = string }
+variable "lock_table" { type = string }
+```
+
+---
+
+## README.md (quick start)
+
+```md
+# EKS Foundation (VPC + NAT, EKS, SGs, Add-ons)
+
+## 1) (Optional) Bootstrap remote backend
+cd terraform/global/bootstrap
+terraform init && terraform apply \
+  -var region=ap-south-1 \
+  -var bucket=your-tfstate-bucket \
+  -var lock_table=your-tflock-table
+
+## 2) Deploy dev
+cd ../../envs/dev
+terraform init
+terraform plan
+terraform apply
+
+# After apply, update your kubeconfig (either):
+aws eks update-kubeconfig --region ap-south-1 --name platform-dev-eks
+
+# Validate
+kubectl get nodes -o wide
+kubectl get pods -A
+
+# ALB Controller & Autoscaler are installed via Helm automatically.
+```
+
+---
+
+## Notes & Extending
+
+* **Single NAT Gateway** keeps costs low; flip `single_nat_gateway=false` for HA.
+* To change node size, edit `eks.eks_managed_node_groups.default.instance_types` or desired sizes in the module.
+* Add more Helm add‑ons (e.g., ExternalDNS, External Secrets) into `modules/addons/main.tf` following the same IRSA pattern.
+* For RDS, create a separate `modules/rds` and reuse the `security-groups` outputs (the DB SG already allows 5432 from EKS nodes).
+* Use environment folders (`envs/dev`, `envs/prod`) to override CIDRs, sizes, and tags cleanly without changing modules.
+
+```
+```
