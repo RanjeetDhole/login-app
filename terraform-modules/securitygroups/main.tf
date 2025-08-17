@@ -1,9 +1,10 @@
+# --- Security Group for Web/App servers ---
 module "sg_web" {
-  source = "./terraform-modules/security-group"
+  source = "./terraform-modules/securitygroups" 
 
-  name        = "${local.name}-web-sg"
-  description = "Allow HTTP and SSH"
-  vpc_id      = module.vpc.vpc_id
+  name        = "${var.name}-${var.env}-web-sg"
+  description = "Allow HTTP, HTTPS, and SSH"
+  vpc_id      = module.vpc.vpc_id  
 
   ingress_rules = [
     {
@@ -29,5 +30,10 @@ module "sg_web" {
     }
   ]
 
-  tags = local.tags
+  tags = {
+    Project   = var.name
+    Env       = var.env
+    ManagedBy = "Terraform"
+    Owner     = "Ranjeet"
+  }
 }
